@@ -67,5 +67,7 @@ def get_transcript():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Run the Flask server on port 81
-app.run(host="0.0.0.0", port=81)
+import os
+
+port = int(os.environ.get("PORT", 81))
+app.run(host="0.0.0.0", port=port)
