@@ -18,12 +18,13 @@ def get_transcript():
     try:
         # Run yt-dlp to fetch auto-generated subtitles
         command = [
-            "yt-dlp",
-            "--write-auto-sub",
-            "--sub-lang", "en",
-            "--skip-download",
-            f"https://www.youtube.com/watch?v={video_id}"
-        ]
+    "yt-dlp",
+    "--write-auto-sub",
+    "--sub-lang", "en",
+    "--skip-download",
+    f"https://www.youtube.com/watch?v={video_id}",
+    "--cookies", "cookies.txt"
+]
         subprocess.run(command, check=True)
 
         # Look for the downloaded VTT file
