@@ -22,6 +22,8 @@ def get_transcript():
             "--write-auto-sub",
             "--sub-lang", "en",
             "--skip-download",
+            "--verbose",  # Add verbose output for better debugging
+            "--no-cache-dir",  # Avoid using cached data
             f"https://www.youtube.com/watch?v={video_id}",
             "--cookies", "cookies.txt",
             "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
@@ -75,6 +77,11 @@ def get_transcript():
             "captions": final_transcript
         })
 
+    except subprocess.CalledProcessError as e:
+        print(f"Command error occurred: {str(e)}")
+        print(f"Command output: {e.stdout if hasattr(e, 'stdout') else 'No output'}")
+        print(f"Command error output: {e.stderr if hasattr(e, 'stderr') else 'No error output'}")
+        return jsonify({"error": f"Command failed: {str(e)}"}), 500
     except Exception as e:
         print(f"Exception occurred: {str(e)}")
         return jsonify({"error": str(e)}), 500
