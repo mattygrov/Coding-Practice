@@ -18,15 +18,24 @@ def get_transcript():
     try:
         # Run yt-dlp to fetch auto-generated subtitles
         command = [
-    "yt-dlp",
-    "--write-auto-sub",
-    "--sub-lang", "en",
-    "--skip-download",
-    f"https://www.youtube.com/watch?v={video_id}",
-    "--cookies", "cookies.txt"
-    "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
-]
-        subprocess.run(command, check=True)
+            "yt-dlp",
+            "--write-auto-sub",
+            "--sub-lang", "en",
+            "--skip-download",
+            f"https://www.youtube.com/watch?v={video_id}",
+            "--cookies", "cookies.txt",
+            "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+        ]
+        
+        # Add debug lines
+        print(f"Running command: {' '.join(command)}")
+        print(f"Working directory: {os.getcwd()}")
+        print(f"Files in directory: {os.listdir()}")
+        
+        # Run the command once, with output capture
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        print(f"Command output: {result.stdout}")
+        print(f"Command error: {result.stderr}")
 
         # Look for the downloaded VTT file
         vtt_file = next((f for f in os.listdir() if f.endswith(".en.vtt")), None)
@@ -67,9 +76,9 @@ def get_transcript():
         })
 
     except Exception as e:
+        print(f"Exception occurred: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-import os
-
-port = int(os.environ.get("PORT", 5000))
-app.run(host="0.0.0.0", port=port)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
