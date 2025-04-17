@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
 import os
-import re
 import requests
-from html import unescape
+import json
+import re
 
 app = Flask(__name__)
 
@@ -19,87 +19,130 @@ def get_transcript():
     try:
         print(f"Processing transcript for video ID: {video_id}")
         
-        # Try using YouTube's official timedtext API
-        # This is a more reliable method that might bypass the restrictions
-        print("Attempting to use YouTube's timedtext API")
+        # Try using InvidiousAPI - a proxy service that can fetch YouTube data
+        print("Attempting to use Invidious API to fetch captions")
         
-        # First, we need to get the caption track info
-        video_info_url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.youtube.com/"
-        }
+        # Using a public Invidious instance to bypass YouTube restrictions
+        # List of instances: https://api.invidious.io/
+        invidious_instances = [
+            "https://invidious.snopyta.org",
+            "https://invidious.kavin.rocks",
+            "https://vid.puffyan.us",
+            "https://yt.artemislena.eu",
+            "https://invidious.flokinet.to"
+        ]
         
-        print(f"Fetching video page: {video_info_url}")
-        response = requests.get(video_info_url, headers=headers)
-        html_content = response.text
+        transcript_text = None
+        error_messages = []
         
-        # Extract caption track URL from video page
-        # Look for the captionTracks in the page source
-        print("Extracting caption track info from page source")
+        # Try each instance until we get a successful response
+        for instance in invidious_instances:
+            try:
+                print(f"Trying Invidious instance: {instance}")
+                captions_url = f"{instance}/api/v1/captions/{video_id}"
+                captions_response = requests.get(captions_url, timeout=10)
+                
+                if captions_response.status_code == 200:
+                    captions_data = captions_response.json()
+                    print(f"Captions data received: {len(captions_data)} caption tracks found")
+                    
+                    # Look for English captions
+                    english_caption = None
+                    for caption in captions_data:
+                        if caption.get('languageCode') == 'en' or caption.get('language_code') == 'en':
+                            english_caption = caption
+                            break
+                    
+                    if not english_caption:
+                        print("No English captions found")
+                        error_messages.append(f"No English captions found on {instance}")
+                        continue
+                    
+                    # Get the caption URL
+                    if 'url' in english_caption:
+                        caption_url = english_caption['url']
+                    elif 'baseUrl' in english_caption:
+                        caption_url = english_caption['baseUrl']
+                    else:
+                        print("Could not find caption URL")
+                        error_messages.append(f"No caption URL found on {instance}")
+                        continue
+                    
+                    # Make sure we have a full URL
+                    if not caption_url.startswith('http'):
+                        caption_url = f"{instance}{caption_url}"
+                    
+                    print(f"Fetching caption content from: {caption_url}")
+                    transcript_response = requests.get(caption_url, timeout=10)
+                    
+                    if transcript_response.status_code == 200:
+                        # Process the transcript content based on format
+                        content_type = transcript_response.headers.get('Content-Type', '')
+                        
+                        if 'json' in content_type:
+                            # Handle JSON format
+                            transcript_data = transcript_response.json()
+                            
+                            # Extract text based on JSON structure
+                            transcript_parts = []
+                            if 'events' in transcript_data:
+                                for event in transcript_data['events']:
+                                    if 'segs' in event:
+                                        for seg in event['segs']:
+                                            if 'utf8' in seg:
+                                                text = seg['utf8'].strip()
+                                                if text:
+                                                    transcript_parts.append(text)
+                            
+                            transcript_text = " ".join(transcript_parts)
+                            
+                        elif 'xml' in content_type or 'ttml' in content_type:
+                            # Handle XML/TTML format
+                            xml_content = transcript_response.text
+                            # Extract text from XML using regex
+                            text_parts = re.findall(r'<text[^>]*>(.*?)</text>', xml_content)
+                            transcript_text = " ".join(text_parts)
+                            
+                        else:
+                            # Handle plain text or other formats
+                            transcript_text = transcript_response.text
+                            # Clean up any XML/HTML tags
+                            transcript_text = re.sub(r'<[^>]+>', '', transcript_text)
+                        
+                        # If we got a transcript, break the loop
+                        if transcript_text:
+                            print(f"Successfully extracted transcript from {instance}")
+                            break
+                    else:
+                        print(f"Failed to fetch caption content: {transcript_response.status_code}")
+                        error_messages.append(f"Caption content request failed with status {transcript_response.status_code} on {instance}")
+                        
+                else:
+                    print(f"Failed to fetch captions data: {captions_response.status_code}")
+                    error_messages.append(f"Captions data request failed with status {captions_response.status_code} on {instance}")
+            
+            except Exception as instance_error:
+                print(f"Error with instance {instance}: {str(instance_error)}")
+                error_messages.append(f"Error with {instance}: {str(instance_error)}")
         
-        captions_regex = r'"captionTracks":\[(.*?)\]'
-        captions_match = re.search(captions_regex, html_content)
-        
-        if not captions_match:
-            print("No caption tracks found in video page")
-            return jsonify({"error": "No captions available for this video"}), 404
-        
-        captions_data = captions_match.group(1)
-        
-        # Extract the URL for the English auto-generated captions
-        url_regex = r'"baseUrl":"(.*?)"'
-        url_match = re.search(url_regex, captions_data)
-        
-        if not url_match:
-            print("Could not extract caption URL")
-            return jsonify({"error": "Could not extract caption URL"}), 500
-        
-        # Get the caption URL and decode escape characters
-        caption_url = url_match.group(1).replace('\\u0026', '&')
-        print(f"Found caption URL: {caption_url}")
-        
-        # Add format parameters to get plain text
-        caption_url = caption_url + "&fmt=json3"
-        
-        # Fetch the captions
-        print(f"Fetching captions from: {caption_url}")
-        captions_response = requests.get(caption_url, headers=headers)
-        captions_data = captions_response.json()
-        
-        # Extract and process the transcript
-        print("Processing caption data")
-        transcript_parts = []
-        
-        # The structure of the JSON may vary, but typically it has events with text
-        if 'events' in captions_data:
-            for event in captions_data['events']:
-                if 'segs' in event:
-                    for seg in event['segs']:
-                        if 'utf8' in seg:
-                            text = seg['utf8']
-                            # Clean up the text
-                            text = text.strip()
-                            if text and not text.isspace():
-                                transcript_parts.append(text)
-        
-        if not transcript_parts:
-            print("No transcript text found in caption data")
-            return jsonify({"error": "No transcript text found"}), 404
-        
-        # Join all parts to form the complete transcript
-        final_transcript = " ".join(transcript_parts)
-        
-        # Clean up any HTML entities
-        final_transcript = unescape(final_transcript)
-        
-        print(f"Successfully extracted transcript with {len(transcript_parts)} segments")
+        # If we still don't have a transcript, try one more approach - YouTube's API
+        if not transcript_text:
+            print("Trying YouTube Data API approach")
+            # Note: This would require an API key, which I'm not including here
+            # You would need to create a project in Google Cloud Console and get a YouTube Data API key
+            # Then you could use this to fetch captions
+            
+            # For now, return error if no transcript was found
+            print("All methods failed to retrieve transcript")
+            return jsonify({
+                "error": "Could not retrieve transcript", 
+                "details": error_messages
+            }), 404
         
         # Return JSON with "captions" so Tana can map it into the Captions field
         return jsonify({
             "video_id": video_id,
-            "captions": final_transcript
+            "captions": transcript_text
         })
 
     except Exception as e:
