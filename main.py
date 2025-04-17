@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
-import subprocess
 import os
 import re
-import json
+import requests
+from html import unescape
 
 app = Flask(__name__)
 
@@ -17,115 +17,95 @@ def get_transcript():
         return jsonify({"error": "Missing video_id"}), 400
 
     try:
-        # Create a temporary cookies json file with the most important cookies
-        # This is an alternative approach to using the cookies.txt file
-        cookie_data = [
-            {
-                "name": "CONSENT", 
-                "value": "YES+",
-                "domain": ".youtube.com",
-                "path": "/"
-            },
-            # Add any other cookies that might be helpful
-            {
-                "name": "LOGIN_INFO",
-                "value": "AFmmF2swRAIgbNeSV70viWKdb6gNQu_9twFRqrGKjc-stQZCyE-HtzQCIHYgTNC1uo121SAGNUFbCxIBRnFVIR9t3xNTYAwK6o-l:QUQ3MjNmeHVTc2N2UXdrUUdMNXJpTUhzbDFka19GOFpxMmRpREtzUVpSYWFnZzE5T3REMU5DZ0RQemNSbUFvb0M4NkN3c3RNZ3ZvcnlCMVotRDlvalRQNEswSFJQOGdXTFZNYTFON2JZck45WXV6YV9pd1dBZGkwNVZtSW5LaHY1NFZtWFRuVzhMekdsbXI3dXFfRUt3S3dDa1piTENFbTBpclpPZE9TNmJrMzdhT2wzMjV5OGp4dkNST1EzYWZ3eWtBOWF1Zk8tM1ZlSWVBcFVLMklreTczUl9vVC1PR2xSUQ==",
-                "domain": ".youtube.com",
-                "path": "/"
-            }
-        ]
+        print(f"Processing transcript for video ID: {video_id}")
         
-        with open('yt_cookies.json', 'w') as f:
-            json.dump(cookie_data, f)
+        # Try using YouTube's official timedtext API
+        # This is a more reliable method that might bypass the restrictions
+        print("Attempting to use YouTube's timedtext API")
         
-        # Try an alternative approach - using youtube-transcript-api
-        # This could bypass the YouTube bot detection issues
-        try:
-            print("Attempting to use youtube-transcript-api as an alternative")
-            from youtube_transcript_api import YouTubeTranscriptApi
-            
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            transcript_text = " ".join([item['text'] for item in transcript_list])
-            
-            return jsonify({
-                "video_id": video_id,
-                "captions": transcript_text
-            })
+        # First, we need to get the caption track info
+        video_info_url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.youtube.com/"
+        }
         
-        except Exception as transcript_api_error:
-            print(f"youtube-transcript-api failed: {str(transcript_api_error)}")
-            print("Falling back to yt-dlp...")
-            
-            # If youtube-transcript-api fails, fall back to yt-dlp with modified options
-            command = [
-                "yt-dlp",
-                "--write-auto-sub",
-                "--sub-lang", "en",
-                "--skip-download",
-                "--verbose",
-                "--no-cache-dir",
-                "--no-check-certificate",  # Skip HTTPS certificate validation
-                f"https://www.youtube.com/watch?v={video_id}",
-                "--cookies", "cookies.txt",
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",  # Try a different user agent
-                "--referer", "https://www.youtube.com/"  # Add a referer to look more like a browser
-            ]
-            
-            # Add debug lines
-            print(f"Running command: {' '.join(command)}")
-            print(f"Working directory: {os.getcwd()}")
-            print(f"Files in directory: {os.listdir()}")
-            
-            # Run the command once, with output capture
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
-            print(f"Command output: {result.stdout}")
-            print(f"Command error: {result.stderr}")
+        print(f"Fetching video page: {video_info_url}")
+        response = requests.get(video_info_url, headers=headers)
+        html_content = response.text
+        
+        # Extract caption track URL from video page
+        # Look for the captionTracks in the page source
+        print("Extracting caption track info from page source")
+        
+        captions_regex = r'"captionTracks":\[(.*?)\]'
+        captions_match = re.search(captions_regex, html_content)
+        
+        if not captions_match:
+            print("No caption tracks found in video page")
+            return jsonify({"error": "No captions available for this video"}), 404
+        
+        captions_data = captions_match.group(1)
+        
+        # Extract the URL for the English auto-generated captions
+        url_regex = r'"baseUrl":"(.*?)"'
+        url_match = re.search(url_regex, captions_data)
+        
+        if not url_match:
+            print("Could not extract caption URL")
+            return jsonify({"error": "Could not extract caption URL"}), 500
+        
+        # Get the caption URL and decode escape characters
+        caption_url = url_match.group(1).replace('\\u0026', '&')
+        print(f"Found caption URL: {caption_url}")
+        
+        # Add format parameters to get plain text
+        caption_url = caption_url + "&fmt=json3"
+        
+        # Fetch the captions
+        print(f"Fetching captions from: {caption_url}")
+        captions_response = requests.get(caption_url, headers=headers)
+        captions_data = captions_response.json()
+        
+        # Extract and process the transcript
+        print("Processing caption data")
+        transcript_parts = []
+        
+        # The structure of the JSON may vary, but typically it has events with text
+        if 'events' in captions_data:
+            for event in captions_data['events']:
+                if 'segs' in event:
+                    for seg in event['segs']:
+                        if 'utf8' in seg:
+                            text = seg['utf8']
+                            # Clean up the text
+                            text = text.strip()
+                            if text and not text.isspace():
+                                transcript_parts.append(text)
+        
+        if not transcript_parts:
+            print("No transcript text found in caption data")
+            return jsonify({"error": "No transcript text found"}), 404
+        
+        # Join all parts to form the complete transcript
+        final_transcript = " ".join(transcript_parts)
+        
+        # Clean up any HTML entities
+        final_transcript = unescape(final_transcript)
+        
+        print(f"Successfully extracted transcript with {len(transcript_parts)} segments")
+        
+        # Return JSON with "captions" so Tana can map it into the Captions field
+        return jsonify({
+            "video_id": video_id,
+            "captions": final_transcript
+        })
 
-            # Look for the downloaded VTT file
-            vtt_file = next((f for f in os.listdir() if f.endswith(".en.vtt")), None)
-            if not vtt_file:
-                return jsonify({"error": "Transcript not found"}), 404
-
-            # Process the VTT file: remove timestamps and any HTML-like tags (e.g. <c>)
-            transcript_lines = []
-            with open(vtt_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    # Skip lines that contain timecodes
-                    if "-->" in line:
-                        continue
-                    # Remove any tags such as <c>...</c> using regex
-                    cleaned_line = re.sub(r'<[^>]+>', '', line)
-                    cleaned_line = cleaned_line.strip()
-
-                    if cleaned_line:
-                        transcript_lines.append(cleaned_line)
-
-            # Optional: remove duplicate lines if needed
-            unique_lines = []
-            seen = set()
-            for line in transcript_lines:
-                if line not in seen:
-                    seen.add(line)
-                    unique_lines.append(line)
-
-            final_transcript = " ".join(unique_lines)
-
-            # Clean up: remove the temporary VTT file
-            os.remove(vtt_file)
-
-            # Return JSON with "captions" so Tana can map it into the Captions field
-            return jsonify({
-                "video_id": video_id,
-                "captions": final_transcript
-            })
-
-    except subprocess.CalledProcessError as e:
-        print(f"Command error occurred: {str(e)}")
-        print(f"Command output: {e.stdout if hasattr(e, 'stdout') else 'No output'}")
-        print(f"Command error output: {e.stderr if hasattr(e, 'stderr') else 'No error output'}")
-        return jsonify({"error": f"Command failed: {str(e)}"}), 500
     except Exception as e:
         print(f"Exception occurred: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
