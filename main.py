@@ -7,7 +7,7 @@ import re
 app = Flask(__name__)
 
 # Your YouTube API key
-YOUTUBE_API_KEY = "AIzaSyBQEL9ZNU7tlgsSte4362v5TsxYrsvo308"  # You'll need to replace this with your actual API key
+YOUTUBE_API_KEY = "AIzaSyBQEL9ZNU7tlgsSte4362v5TsxYrsvo308"  # Replace with your actual API key
 
 @app.route("/")
 def home():
@@ -36,26 +36,29 @@ def get_transcript():
         
         # Look for English captions
         caption_id = None
+        caption_type = None
         for item in captions_data.get('items', []):
             language = item.get('snippet', {}).get('language', '')
             track_kind = item.get('snippet', {}).get('trackKind', '')
             
             if language == 'en' or language.startswith('en-'):
                 caption_id = item.get('id')
+                caption_type = track_kind
                 print(f"Found English caption track: {caption_id}, type: {track_kind}")
                 break
         
-        if not caption_id:
-            print("No English captions found")
+        transcript_text = None
+        
+        if caption_id:
+            # Try multiple methods to get the transcript
             
-            # If no captions found through the API, try an alternative approach
-            # YouTube's timedtext API (which doesn't require an API key)
-            print("Trying alternative timedtext approach")
-            
+            # Method 1: Standard timedtext API
             timedtext_url = f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}"
+            print(f"Trying Method 1: Standard timedtext API")
             timedtext_response = requests.get(timedtext_url)
             
-            if timedtext_response.status_code == 200 and timedtext_response.text:
+            if timedtext_response.status_code == 200 and timedtext_response.text and "<text" in timedtext_response.text:
+                print("Method 1 succeeded")
                 # Parse the XML response
                 xml_content = timedtext_response.text
                 # Extract text from XML using regex
@@ -64,43 +67,99 @@ def get_transcript():
                 # Clean up HTML entities
                 cleaned_parts = [html.unescape(part) for part in text_parts]
                 transcript_text = " ".join(cleaned_parts)
+            else:
+                # Method 2: Try with caption track ID
+                timedtext_url = f"https://www.youtube.com/api/timedtext?type=track&v={video_id}&id={caption_id}"
+                print(f"Trying Method 2: Timedtext API with track ID")
+                timedtext_response = requests.get(timedtext_url)
                 
-                if transcript_text:
-                    print("Successfully extracted transcript from timedtext API")
-                    return jsonify({
-                        "video_id": video_id,
-                        "captions": transcript_text
-                    })
+                if timedtext_response.status_code == 200 and timedtext_response.text and "<text" in timedtext_response.text:
+                    print("Method 2 succeeded")
+                    # Parse the XML response
+                    xml_content = timedtext_response.text
+                    # Extract text from XML using regex
+                    text_parts = re.findall(r'<text[^>]*>(.*?)</text>', xml_content)
+                    
+                    # Clean up HTML entities
+                    cleaned_parts = [html.unescape(part) for part in text_parts]
+                    transcript_text = " ".join(cleaned_parts)
+                else:
+                    # Method 3: Try with ASR format
+                    timedtext_url = f"https://www.youtube.com/api/timedtext?fmt=srv3&v={video_id}&asr_langs=en&key=yttt1"
+                    print(f"Trying Method 3: Timedtext API with ASR format")
+                    timedtext_response = requests.get(timedtext_url)
+                    
+                    if timedtext_response.status_code == 200 and timedtext_response.text:
+                        print("Method 3 succeeded")
+                        # This format might be different (JSON or XML)
+                        content_type = timedtext_response.headers.get('Content-Type', '')
+                        
+                        if 'xml' in content_type or '<text' in timedtext_response.text:
+                            # XML format
+                            xml_content = timedtext_response.text
+                            text_parts = re.findall(r'<text[^>]*>(.*?)</text>', xml_content)
+                            cleaned_parts = [html.unescape(part) for part in text_parts]
+                            transcript_text = " ".join(cleaned_parts)
+                        elif 'json' in content_type:
+                            # JSON format
+                            try:
+                                json_data = timedtext_response.json()
+                                # Extract text based on JSON structure
+                                # This is a simplified version and might need adjusting based on actual format
+                                if 'events' in json_data:
+                                    text_parts = []
+                                    for event in json_data['events']:
+                                        if 'segs' in event:
+                                            for seg in event['segs']:
+                                                if 'utf8' in seg:
+                                                    text_parts.append(seg['utf8'])
+                                    transcript_text = " ".join(text_parts)
+                            except:
+                                print("Failed to parse JSON response")
+                    else:
+                        # Method 4: Try with formats param
+                        timedtext_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en&fmt=json3"
+                        print(f"Trying Method 4: Timedtext API with JSON format")
+                        timedtext_response = requests.get(timedtext_url)
+                        
+                        if timedtext_response.status_code == 200 and timedtext_response.text:
+                            print("Method 4 succeeded")
+                            try:
+                                json_data = timedtext_response.json()
+                                # Extract text based on JSON structure
+                                if 'events' in json_data:
+                                    text_parts = []
+                                    for event in json_data['events']:
+                                        if 'segs' in event:
+                                            for seg in event['segs']:
+                                                if 'utf8' in seg:
+                                                    text_parts.append(seg['utf8'])
+                                    transcript_text = " ".join(text_parts)
+                            except:
+                                print("Failed to parse JSON response")
+        else:
+            # No captions found through the API, try a direct approach
+            print("No caption tracks found, trying direct timedtext API")
+            
+            # Try the timedtext API directly
+            timedtext_url = f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}"
+            timedtext_response = requests.get(timedtext_url)
+            
+            if timedtext_response.status_code == 200 and timedtext_response.text and "<text" in timedtext_response.text:
+                # Parse the XML response
+                xml_content = timedtext_response.text
+                # Extract text from XML using regex
+                text_parts = re.findall(r'<text[^>]*>(.*?)</text>', xml_content)
                 
-            return jsonify({"error": "No captions available for this video"}), 404
-        
-        # Step 2: Download the caption track
-        # Note: This requires auth with OAuth 2.0, not just an API key
-        # For simplicity, we'll use the timedtext API instead
-        
-        timedtext_url = f"https://www.youtube.com/api/timedtext?lang=en&v={video_id}"
-        print(f"Fetching caption content from timedtext API")
-        
-        timedtext_response = requests.get(timedtext_url)
-        
-        if timedtext_response.status_code != 200 or not timedtext_response.text:
-            print("Failed to fetch captions from timedtext API")
-            return jsonify({"error": "Failed to fetch caption content"}), 500
-        
-        # Parse the XML response
-        xml_content = timedtext_response.text
-        # Extract text from XML using regex
-        text_parts = re.findall(r'<text[^>]*>(.*?)</text>', xml_content)
-        
-        # Clean up HTML entities
-        cleaned_parts = [html.unescape(part) for part in text_parts]
-        transcript_text = " ".join(cleaned_parts)
+                # Clean up HTML entities
+                cleaned_parts = [html.unescape(part) for part in text_parts]
+                transcript_text = " ".join(cleaned_parts)
         
         if not transcript_text:
-            print("No text content found in captions")
-            return jsonify({"error": "No text content in captions"}), 404
+            print("All methods failed to retrieve transcript")
+            return jsonify({"error": "Could not retrieve transcript content"}), 404
         
-        print(f"Successfully extracted transcript with {len(cleaned_parts)} segments")
+        print(f"Successfully extracted transcript")
         
         # Return JSON with "captions" so Tana can map it into the Captions field
         return jsonify({
